@@ -1,25 +1,47 @@
 import type { VaultRequest, VaultResponse } from "./protocol";
+import { RecordStore, type RecordItem } from "../store/recordStore";
+import { IndexStore } from "../store/indexStore";
+import { QueryEngine } from "../store/queryEngine";
 
-type RecordItem = {
-  id: string;
-  name: string;
-  email: string;
-  status: "active" | "inactive";
+// ===== TYPE PAYLOAD =====
+type QueryPayload = {
+  search?: string;
+  status?: "active" | "inactive";
 };
 
-const mockRecords: RecordItem[] = [
-  { id: "1", name: "John Doe", email: "john@example.com", status: "active" },
-  {
-    id: "2",
-    name: "Jane Smith",
-    email: "jane@example.com",
-    status: "inactive",
-  },
-  { id: "3", name: "Alex Brown", email: "alex@example.com", status: "active" },
-];
+type GetByIdsPayload = {
+  ids: string[];
+};
 
+// ===== INIT ENGINE =====
+const recordStore = new RecordStore();
+const indexStore = new IndexStore();
+const queryEngine = new QueryEngine(recordStore, indexStore);
+
+// ===== GENERATE FAKE DATA =====
+function generateData(n: number): RecordItem[] {
+  const data: RecordItem[] = [];
+
+  for (let i = 0; i < n; i++) {
+    data.push({
+      id: String(i),
+      name: `User ${i}`,
+      email: `user${i}@test.com`,
+      status: i % 2 === 0 ? "active" : "inactive",
+    });
+  }
+
+  return data;
+}
+
+// ===== LOAD INITIAL DATA =====
+const initialData = generateData(10000);
+recordStore.upsertMany(initialData);
+initialData.forEach((item) => indexStore.add(item));
+
+// ===== ROUTER =====
 export function setupVaultRouter(allowedOrigin: string) {
-  const handleMessage = (event: MessageEvent<VaultRequest>) => {
+  const handler = (event: MessageEvent<VaultRequest>) => {
     if (event.origin !== allowedOrigin) return;
 
     const request = event.data;
@@ -29,48 +51,71 @@ export function setupVaultRouter(allowedOrigin: string) {
 
     try {
       switch (request.action) {
-        case "ping":
+        // ===== PING =====
+        case "ping": {
           response = {
             id: request.id,
             status: "success",
-            data: "pong from data vault",
+            data: "pong from data vault 🚀",
           };
           break;
+        }
 
-        case "records.query":
+        // ===== QUERY RECORDS =====
+        case "records.query": {
+          const payload = (request.payload ?? {}) as QueryPayload;
+
+          const result = queryEngine.query(payload);
+
           response = {
             id: request.id,
             status: "success",
             data: {
-              items: mockRecords,
-              total: mockRecords.length,
+              items: recordStore.getByIds(result.ids),
+              total: result.total,
             },
           };
           break;
+        }
 
-        default:
+        // ===== GET BY IDS =====
+        case "records.getByIds": {
+          const payload = request.payload as GetByIdsPayload;
+
+          response = {
+            id: request.id,
+            status: "success",
+            data: recordStore.getByIds(payload.ids),
+          };
+          break;
+        }
+
+        // ===== DEFAULT =====
+        default: {
           response = {
             id: request.id,
             status: "error",
-            error: `Unsupported action: ${request.action}`,
+            error: `Unknown action: ${request.action}`,
           };
+        }
       }
-    } catch (error) {
+    } catch (err) {
       response = {
         id: request.id,
         status: "error",
-        error: error instanceof Error ? error.message : "Unknown error",
+        error: err instanceof Error ? err.message : "Unknown error",
       };
     }
 
+    // ===== SEND BACK RESPONSE =====
     if (event.source && "postMessage" in event.source) {
       (event.source as WindowProxy).postMessage(response, event.origin);
     }
   };
 
-  window.addEventListener("message", handleMessage);
+  window.addEventListener("message", handler);
 
   return () => {
-    window.removeEventListener("message", handleMessage);
+    window.removeEventListener("message", handler);
   };
 }
