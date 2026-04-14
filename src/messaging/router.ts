@@ -7,6 +7,8 @@ import { QueryEngine } from "../store/queryEngine";
 type QueryPayload = {
   search?: string;
   status?: "active" | "inactive";
+  page?: number;
+  pageSize?: number;
 };
 
 type GetByIdsPayload = {
@@ -73,6 +75,9 @@ export function setupVaultRouter(allowedOrigin: string) {
             data: {
               items: recordStore.getByIds(result.ids),
               total: result.total,
+              page: result.page,
+              pageSize: result.pageSize,
+              totalPages: result.totalPages,
             },
           };
           break;
