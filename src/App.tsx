@@ -1,7 +1,8 @@
 import { useEffect } from "react";
 import { setupVaultRouter } from "./messaging/router";
 
-const MAIN_APP_ORIGIN = "http://localhost:5173";
+const MAIN_APP_ORIGIN =
+  import.meta.env.VITE_MAIN_APP_ORIGIN || "http://localhost:5173";
 
 export default function App() {
   useEffect(() => {
