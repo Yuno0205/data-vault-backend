@@ -14,6 +14,10 @@ export class RecordStore {
     }
   }
 
+  getById(id: string) {
+    return this.records.get(id);
+  }
+
   getByIds(ids: string[]) {
     return ids
       .map((id) => this.records.get(id))

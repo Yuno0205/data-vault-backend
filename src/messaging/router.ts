@@ -4,6 +4,7 @@ import type { RecordItem } from "../store/recordStore";
 import { IndexStore } from "../store/indexStore";
 import { QueryEngine } from "../store/queryEngine";
 import { bulkInsertRecords } from "../store/bulkInsert";
+import { bulkUpdateStatus } from "../store/bulkUpdateStatus";
 
 type QueryPayload = {
   search?: string;
@@ -25,6 +26,7 @@ const ALLOWED_ACTIONS = new Set([
   "records.query",
   "records.getByIds",
   "records.bulkInsert",
+  "records.bulkUpdateStatus",
 ]);
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -96,6 +98,16 @@ function validateBulkInsertPayload(
   }
 
   return true;
+}
+
+function validateBulkUpdatePayload(
+  p: unknown,
+): p is { status: "active" | "inactive" } {
+  return (
+    typeof p === "object" &&
+    p !== null &&
+    ((p as any).status === "active" || (p as any).status === "inactive")
+  );
 }
 
 const recordStore = new RecordStore();
@@ -245,6 +257,33 @@ export function setupVaultRouter(allowedOrigin: string) {
             totalCount: count,
             chunkSize: 1000,
             startIndex: recordStore.size(),
+            targetWindow: event.source as WindowProxy,
+            targetOrigin: event.origin,
+          });
+
+          response = {
+            id: request.id,
+            status: "success",
+            data: result,
+          };
+          break;
+        }
+
+        case "records.bulkUpdateStatus": {
+          const payload = request.payload ?? {};
+
+          if (!validateBulkUpdatePayload(payload)) {
+            response = {
+              id: request.id,
+              status: "error",
+              error: "Invalid bulk update payload",
+            };
+            break;
+          }
+
+          const result = await bulkUpdateStatus(recordStore, indexStore, {
+            status: payload.status,
+            chunkSize: 2000,
             targetWindow: event.source as WindowProxy,
             targetOrigin: event.origin,
           });
