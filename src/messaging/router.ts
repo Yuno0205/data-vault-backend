@@ -20,6 +20,84 @@ type BulkInsertPayload = {
   count?: number;
 };
 
+const ALLOWED_ACTIONS = new Set([
+  "ping",
+  "records.query",
+  "records.getByIds",
+  "records.bulkInsert",
+]);
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
+function isValidRequest(
+  req: unknown,
+): req is { id: string; action: string; payload?: unknown } {
+  return (
+    isObject(req) &&
+    typeof req.id === "string" &&
+    typeof req.action === "string"
+  );
+}
+
+function validateQueryPayload(payload: unknown): payload is QueryPayload {
+  if (!isObject(payload)) return false;
+
+  if (payload.search !== undefined && typeof payload.search !== "string") {
+    return false;
+  }
+
+  if (
+    payload.status !== undefined &&
+    payload.status !== "active" &&
+    payload.status !== "inactive"
+  ) {
+    return false;
+  }
+
+  if (
+    payload.page !== undefined &&
+    (!Number.isInteger(payload.page) || Number(payload.page) < 1)
+  ) {
+    return false;
+  }
+
+  if (
+    payload.pageSize !== undefined &&
+    (!Number.isInteger(payload.pageSize) ||
+      Number(payload.pageSize) < 1 ||
+      Number(payload.pageSize) > 100)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+function validateGetByIdsPayload(payload: unknown): payload is GetByIdsPayload {
+  return (
+    isObject(payload) &&
+    Array.isArray(payload.ids) &&
+    payload.ids.every((id) => typeof id === "string")
+  );
+}
+
+function validateBulkInsertPayload(
+  payload: unknown,
+): payload is BulkInsertPayload {
+  if (!isObject(payload)) return false;
+
+  if (
+    payload.count !== undefined &&
+    (!Number.isInteger(payload.count) || Number(payload.count) < 1)
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
 const recordStore = new RecordStore();
 const indexStore = new IndexStore();
 const queryEngine = new QueryEngine(recordStore, indexStore);
@@ -39,17 +117,32 @@ function generateData(n: number): RecordItem[] {
   return data;
 }
 
-const initialData = generateData(10000);
-recordStore.upsertMany(initialData);
-initialData.forEach((item) => indexStore.add(item));
+if (recordStore.size() === 0) {
+  const initialData = generateData(10000);
+  recordStore.upsertMany(initialData);
+  initialData.forEach((item) => indexStore.add(item));
+}
 
 export function setupVaultRouter(allowedOrigin: string) {
   const handler = async (event: MessageEvent<VaultRequest>) => {
     if (event.origin !== allowedOrigin) return;
+    if (!(event.source && "postMessage" in event.source)) return;
 
     const request = event.data;
-    if (!request || !request.id || !request.action) return;
-    if (!(event.source && "postMessage" in event.source)) return;
+
+    if (!isValidRequest(request)) return;
+
+    if (!ALLOWED_ACTIONS.has(request.action)) {
+      (event.source as WindowProxy).postMessage(
+        {
+          id: request.id,
+          status: "error",
+          error: "Invalid action",
+        } satisfies VaultResponse,
+        event.origin,
+      );
+      return;
+    }
 
     let response: VaultResponse;
 
@@ -65,37 +158,88 @@ export function setupVaultRouter(allowedOrigin: string) {
         }
 
         case "records.query": {
-          const payload = (request.payload ?? {}) as QueryPayload;
-          const result = queryEngine.query(payload);
+          const rawPayload = request.payload ?? {};
+
+          if (!validateQueryPayload(rawPayload)) {
+            response = {
+              id: request.id,
+              status: "error",
+              error: "Invalid query payload",
+            };
+            break;
+          }
+
+          const safePayload: QueryPayload = {
+            search: rawPayload.search?.trim(),
+            status: rawPayload.status,
+            page: Math.max(1, rawPayload.page ?? 1),
+            pageSize: Math.min(100, rawPayload.pageSize ?? 50),
+          };
+
+          const vaultStartedAt = performance.now();
+
+          const queryStartedAt = performance.now();
+          const result = queryEngine.query(safePayload);
+          const queryEndedAt = performance.now();
+
+          const hydrateStartedAt = performance.now();
+          const items = recordStore.getByIds(result.ids);
+          const hydrateEndedAt = performance.now();
+
+          const vaultEndedAt = performance.now();
 
           response = {
             id: request.id,
             status: "success",
             data: {
-              items: recordStore.getByIds(result.ids),
+              items,
               total: result.total,
               page: result.page,
               pageSize: result.pageSize,
               totalPages: result.totalPages,
+              metrics: {
+                queryTimeMs: queryEndedAt - queryStartedAt,
+                hydrateTimeMs: hydrateEndedAt - hydrateStartedAt,
+                vaultProcessingMs: vaultEndedAt - vaultStartedAt,
+              },
             },
           };
           break;
         }
 
         case "records.getByIds": {
-          const payload = request.payload as GetByIdsPayload;
+          const rawPayload = request.payload;
+
+          if (!validateGetByIdsPayload(rawPayload)) {
+            response = {
+              id: request.id,
+              status: "error",
+              error: "Invalid ids payload",
+            };
+            break;
+          }
 
           response = {
             id: request.id,
             status: "success",
-            data: recordStore.getByIds(payload.ids),
+            data: recordStore.getByIds(rawPayload.ids),
           };
           break;
         }
 
         case "records.bulkInsert": {
-          const payload = (request.payload ?? {}) as BulkInsertPayload;
-          const count = Math.max(1, payload.count ?? 50000);
+          const rawPayload = request.payload ?? {};
+
+          if (!validateBulkInsertPayload(rawPayload)) {
+            response = {
+              id: request.id,
+              status: "error",
+              error: "Invalid bulk insert payload",
+            };
+            break;
+          }
+
+          const count = Math.min(50000, rawPayload.count ?? 50000);
 
           const result = await bulkInsertRecords(recordStore, indexStore, {
             totalCount: count,
