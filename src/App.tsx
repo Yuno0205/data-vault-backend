@@ -6,6 +6,14 @@ const MAIN_APP_ORIGIN = "http://localhost:5173";
 export default function App() {
   useEffect(() => {
     const cleanup = setupVaultRouter(MAIN_APP_ORIGIN);
+
+    window.parent.postMessage(
+      {
+        type: "vault.ready",
+      },
+      MAIN_APP_ORIGIN,
+    );
+
     return cleanup;
   }, []);
 

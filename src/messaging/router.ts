@@ -101,12 +101,11 @@ function validateBulkInsertPayload(
 }
 
 function validateBulkUpdatePayload(
-  p: unknown,
-): p is { status: "active" | "inactive" } {
+  payload: unknown,
+): payload is { status: "active" | "inactive" } {
   return (
-    typeof p === "object" &&
-    p !== null &&
-    ((p as any).status === "active" || (p as any).status === "inactive")
+    isObject(payload) &&
+    (payload.status === "active" || payload.status === "inactive")
   );
 }
 
@@ -270,9 +269,9 @@ export function setupVaultRouter(allowedOrigin: string) {
         }
 
         case "records.bulkUpdateStatus": {
-          const payload = request.payload ?? {};
+          const rawPayload = request.payload ?? {};
 
-          if (!validateBulkUpdatePayload(payload)) {
+          if (!validateBulkUpdatePayload(rawPayload)) {
             response = {
               id: request.id,
               status: "error",
@@ -282,7 +281,7 @@ export function setupVaultRouter(allowedOrigin: string) {
           }
 
           const result = await bulkUpdateStatus(recordStore, indexStore, {
-            status: payload.status,
+            status: rawPayload.status,
             chunkSize: 2000,
             targetWindow: event.source as WindowProxy,
             targetOrigin: event.origin,
