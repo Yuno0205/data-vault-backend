@@ -1,9 +1,10 @@
 import type { VaultRequest, VaultResponse } from "./protocol";
-import { RecordStore, type RecordItem } from "../store/recordStore";
+import { RecordStore } from "../store/recordStore";
+import type { RecordItem } from "../store/recordStore";
 import { IndexStore } from "../store/indexStore";
 import { QueryEngine } from "../store/queryEngine";
+import { bulkInsertRecords } from "../store/bulkInsert";
 
-// ===== TYPE PAYLOAD =====
 type QueryPayload = {
   search?: string;
   status?: "active" | "inactive";
@@ -15,12 +16,14 @@ type GetByIdsPayload = {
   ids: string[];
 };
 
-// ===== INIT ENGINE =====
+type BulkInsertPayload = {
+  count?: number;
+};
+
 const recordStore = new RecordStore();
 const indexStore = new IndexStore();
 const queryEngine = new QueryEngine(recordStore, indexStore);
 
-// ===== GENERATE FAKE DATA =====
 function generateData(n: number): RecordItem[] {
   const data: RecordItem[] = [];
 
@@ -36,24 +39,22 @@ function generateData(n: number): RecordItem[] {
   return data;
 }
 
-// ===== LOAD INITIAL DATA =====
 const initialData = generateData(10000);
 recordStore.upsertMany(initialData);
 initialData.forEach((item) => indexStore.add(item));
 
-// ===== ROUTER =====
 export function setupVaultRouter(allowedOrigin: string) {
-  const handler = (event: MessageEvent<VaultRequest>) => {
+  const handler = async (event: MessageEvent<VaultRequest>) => {
     if (event.origin !== allowedOrigin) return;
 
     const request = event.data;
     if (!request || !request.id || !request.action) return;
+    if (!(event.source && "postMessage" in event.source)) return;
 
     let response: VaultResponse;
 
     try {
       switch (request.action) {
-        // ===== PING =====
         case "ping": {
           response = {
             id: request.id,
@@ -63,10 +64,8 @@ export function setupVaultRouter(allowedOrigin: string) {
           break;
         }
 
-        // ===== QUERY RECORDS =====
         case "records.query": {
           const payload = (request.payload ?? {}) as QueryPayload;
-
           const result = queryEngine.query(payload);
 
           response = {
@@ -83,7 +82,6 @@ export function setupVaultRouter(allowedOrigin: string) {
           break;
         }
 
-        // ===== GET BY IDS =====
         case "records.getByIds": {
           const payload = request.payload as GetByIdsPayload;
 
@@ -95,7 +93,26 @@ export function setupVaultRouter(allowedOrigin: string) {
           break;
         }
 
-        // ===== DEFAULT =====
+        case "records.bulkInsert": {
+          const payload = (request.payload ?? {}) as BulkInsertPayload;
+          const count = Math.max(1, payload.count ?? 50000);
+
+          const result = await bulkInsertRecords(recordStore, indexStore, {
+            totalCount: count,
+            chunkSize: 1000,
+            startIndex: recordStore.size(),
+            targetWindow: event.source as WindowProxy,
+            targetOrigin: event.origin,
+          });
+
+          response = {
+            id: request.id,
+            status: "success",
+            data: result,
+          };
+          break;
+        }
+
         default: {
           response = {
             id: request.id,
@@ -112,10 +129,7 @@ export function setupVaultRouter(allowedOrigin: string) {
       };
     }
 
-    // ===== SEND BACK RESPONSE =====
-    if (event.source && "postMessage" in event.source) {
-      (event.source as WindowProxy).postMessage(response, event.origin);
-    }
+    (event.source as WindowProxy).postMessage(response, event.origin);
   };
 
   window.addEventListener("message", handler);
